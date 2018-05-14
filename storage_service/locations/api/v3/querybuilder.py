@@ -1,11 +1,11 @@
 """This module defines :class:`QueryBuilder`. A ``QueryBuilder`` instance is
-used to build a query object from a native Python data structure: nested lists.
+used to build a query object from simple data structure, viz. nested lists.
 
-The sole public method is ``get_query_set``. It takes a dict with ``'filter'``
-and ``'order_by'`` keys. The filter key evaluates to a filter expression
-represented as a Python list (or JSON array). The ``get_query_set`` method
-returns a Django QuerySet instance. Errors in the Python filter expression will
-cause custom ``SearchParseError``s to be raised.
+The primary public method is ``get_query_set``. It takes a dict with
+``'filter'`` and ``'order_by'`` keys. The filter key evaluates to a filter
+expression represented as a Python list (or JSON array). The ``get_query_set``
+method returns a Django QuerySet instance. Errors in the Python filter
+expression will cause custom ``SearchParseError``s to be raised.
 
 The searchable models and their attributes (scalars & collections) are defined
 in QueryBuilder.schema.
@@ -131,6 +131,7 @@ class QueryBuilder(object):
             settings = {}
 
     def get_query_set(self, query_as_dict):
+        """Given a dict, return a Django ORM query set."""
         self.clear_errors()
         query_expression = self._get_query_expression(query_as_dict.get('filter'))
         order_bys = self._get_order_bys(
@@ -282,11 +283,13 @@ class QueryBuilder(object):
     ############################################################################
     # Data structures
     ############################################################################
-    # Alter the relations, schema and models2joins dicts in order to
-    # change what types of input the query builder accepts.
+
+    # Alter the relations and schema dicts in order to change what types of
+    # input the query builder accepts.
 
     # The default set of available relations.  Relations with aliases are
-    # treated as their aliases.  E.g., a search like ['Package', 'source_id' '=', ...]
+    # treated as their aliases. E.g., a search like
+    # ['Package', 'source_id' '!=', ...]
     # will generate the Q expression Q(source_id=...)
     relations = {
         'exact': {},
@@ -390,29 +393,6 @@ class QueryBuilder(object):
     }
 
     model_aliases = {}
-
-    # Maps model names to the names of other models they can be joined to for
-    # queries.  The values of the join models are the attributes of the original
-    # model that the joins are actually made on, e.g., outerjoin(model.Package.tags)
-    models2joins = {
-        'Package': {
-            'File': 'files',
-            'Translation': 'translations',
-            'Tag': 'tags',
-            'Collection': 'collections',
-            'Memorizer': 'memorizers'
-        },
-        'File': {
-            'Tag': 'tags',
-            'Package': 'forms',
-            'Collection': 'collections'
-        },
-        'Collection': {
-            'Package': 'forms',
-            'File': 'files',
-            'Tag': 'tags'
-        }
-    }
 
     ############################################################################
     # Model getters
