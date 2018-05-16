@@ -2,6 +2,36 @@
   Storage Service API Version 3
 ================================================================================
 
+user API::
+
+    import drl
+    resources = {
+        'location': {
+            'resource_class': LocationResource,
+            'model_class': Location,
+            'schema_class': LocationSchema
+        },
+        'package': {
+            'resource_class': PackageResource,
+            'model_class': Package,
+            'schema_class': PackageSchema
+        },
+        'space': {
+            'resource_class': SpaceResource,
+            'model_class': Space,
+            'schema_class': SpaceSchema
+        },
+        'pipeline': {
+            'resource_class': PipelineResource,
+            'model_class': Pipeline,
+            'schema_class': PipelineSchema
+        }
+    }
+    drl.register_resources(resources)
+    urlpatterns = drl.get_urlpatterns()
+    openapi_schema = drl.get_openapi_schema()  # a YAML file
+
+
 Get all resources of a given type
 ================================================================================
 
