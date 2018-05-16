@@ -2,6 +2,7 @@ from __future__ import absolute_import
 # stdlib, alphabetical
 import cPickle
 import logging
+import sys
 
 # Core Django, alphabetical
 from django.db import models
@@ -33,7 +34,14 @@ class Async(models.Model):
 
     @property
     def result(self):
-        return cPickle.loads(self._result)
+        result = self._result
+        # Convert memoryview (PY3) to str.
+        if sys.version_info[0] == 3 and isinstance(result, memoryview):
+            result = str(result)
+        # Convert buffer (PY2) to str.
+        if sys.version_info[0] == 2 and isinstance(result, buffer):
+            result = str(result)
+        return cPickle.loads(result)
 
     @result.setter
     def result(self, value):
