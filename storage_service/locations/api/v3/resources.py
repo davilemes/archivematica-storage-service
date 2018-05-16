@@ -34,16 +34,27 @@ import abc
 from collections import namedtuple
 import json
 import logging
+import pprint
 
 from django.conf import settings
 from django.conf.urls import url
+from django.db.models.fields.related import ManyToManyField
 from django.forms.models import model_to_dict
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 from formencode.schema import Schema
 from formencode.validators import Int, Invalid
 import inflect
 
 import locations.models as models
+from locations.api.v3.constants import (
+    JSONDecodeErrorResponse,
+    UNAUTHORIZED_MSG,
+    OK_STATUS,
+    NOT_FOUND_STATUS,
+    BAD_REQUEST_STATUS,
+    FORBIDDEN_STATUS,
+)
 from locations.api.v3.querybuilder import QueryBuilder, SearchParseError
 import locations.api.v3.schemata as schemata
 import locations.api.v3.utils as utils
@@ -54,19 +65,9 @@ INFLP = inflect.engine()
 INFLP.classical()
 
 
-JSONDecodeErrorResponse = {
-    'error': 'JSON decode error: the parameters provided were not valid'
-             ' JSON.'
-}
-
-UNAUTHORIZED_MSG = {
-    'error': 'You are not authorized to access this resource.'
-}
-
-
-# ResCol is a resource collection object factory. Each instance holds the
+# RsrcColl is a resource collection object factory. Each instance holds the
 # relevant model name and instance getter for a given resource collection name.
-ResCol = namedtuple('ResCol', ['model_name', 'getter'])
+RsrcColl = namedtuple('RsrcColl', ['model_name', 'getter'])
 
 
 def get_mini_dicts_getter(model_name):
@@ -155,12 +156,12 @@ class ReadonlyResources(object):
     def create(self):
         LOGGER.warning('Failed attempt to create a read-only %s',
                        self.hmn_member_name)
-        return READONLY_RSLT, 404
+        return READONLY_RSLT, NOT_FOUND_STATUS
 
     def new(self):
         LOGGER.warning('Failed attempt to get data for creating a read-only %s',
                        self.hmn_member_name)
-        return READONLY_RSLT, 404
+        return READONLY_RSLT, NOT_FOUND_STATUS
 
     def index(self):
         """Get all resources.
@@ -176,17 +177,18 @@ class ReadonlyResources(object):
         try:
             query_set = self.add_order_by(query_set, get_params)
             query_set = self._filter_query(query_set)
-            result = add_pagination(query_set, get_params)
+            result = self.add_pagination(query_set, get_params)
         except Invalid as error:
             errors = error.unpack_errors()
             LOGGER.warning('Attempt to read all %s resulted in an error(s): %s',
                            self.hmn_collection_name, errors)
-            return {'errors': errors}, 400
+            return {'errors': errors}, BAD_REQUEST_STATUS
         headers_ctl = self._headers_control(result)
         if headers_ctl is not False:
             return headers_ctl
         LOGGER.info('Reading all %s', self.hmn_collection_name)
-        return result
+        LOGGER.info(result)
+        return result, OK_STATUS
 
     def show(self, pk):
         """Return a resource, given its pk.
@@ -199,27 +201,27 @@ class ReadonlyResources(object):
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}, 404
+            return {'error': msg}, NOT_FOUND_STATUS
         if self._model_access_unauth(resource_model) is not False:
             LOGGER.warning(UNAUTHORIZED_MSG)
-            return UNAUTHORIZED_MSG, 403
+            return UNAUTHORIZED_MSG, FORBIDDEN_STATUS
         LOGGER.info('Reading a single %s', self.hmn_member_name)
-        return self._get_show_dict(resource_model)
+        return self._get_show_dict(resource_model), OK_STATUS
 
     def update(self, pk):
         LOGGER.warning('Failed attempt to update a read-only %s',
                        self.hmn_member_name)
-        return READONLY_RSLT, 404
+        return READONLY_RSLT, NOT_FOUND_STATUS
 
     def edit(self, pk):
         LOGGER.warning('Failed attempt to get data for updating a read-only %s',
                        self.hmn_member_name)
-        return READONLY_RSLT, 404
+        return READONLY_RSLT, NOT_FOUND_STATUS
 
     def delete(self, pk):
         LOGGER.warning('Failed attempt to delete a read-only %s',
                        self.hmn_member_name)
-        return READONLY_RSLT, 404
+        return READONLY_RSLT, NOT_FOUND_STATUS
 
     def search(self):
         """Return the list of resources matching the input JSON query.
@@ -239,7 +241,8 @@ class ReadonlyResources(object):
                 self.request.body.decode('utf8'))
         except ValueError:
             LOGGER.warning('Request body was not valid JSON')
-            return JSONDecodeErrorResponse, 400
+            LOGGER.info(self.request.body.decode('utf8'))
+            return JSONDecodeErrorResponse, BAD_REQUEST_STATUS
         try:
             query_set = self.query_builder.get_query_set(
                 python_search_params.get('query'))
@@ -248,32 +251,33 @@ class ReadonlyResources(object):
             LOGGER.warning(
                 'Attempt to search over all %s resulted in an error(s): %s',
                 self.hmn_collection_name, errors)
-            return {'errors': errors}, 400
+            return {'errors': errors}, BAD_REQUEST_STATUS
         # Might be better to catch (OperationalError, AttributeError,
         # InvalidRequestError, RuntimeError):
         except Exception as error:  # FIX: too general exception
             LOGGER.warning('Filter expression (%s) raised an unexpected'
                            ' exception: %s.', self.request.body, error)
             return {'error': 'The specified search parameters generated an'
-                             ' invalid database query'}, 400
+                             ' invalid database query'}, BAD_REQUEST_STATUS
         query_set = self._eagerload_model(query_set)
         query_set = self._filter_query(query_set)
         try:
-            ret = add_pagination(query_set, python_search_params.get('paginator'))
+            ret = self.add_pagination(
+                query_set, python_search_params.get('paginator'))
         except OperationalError:
             msg = ('The specified search parameters generated an invalid'
                    ' database query')
             LOGGER.warning(msg)
-            return {'error': msg}, 400
+            return {'error': msg}, BAD_REQUEST_STATUS
         except Invalid as error:  # For paginator schema errors.
             errors = error.unpack_errors()
             LOGGER.warning(
                 'Attempt to search over all %s resulted in an error(s): %s',
                 self.hmn_collection_name, errors)
-            return {'errors': errors}, 400
+            return {'errors': errors}, BAD_REQUEST_STATUS
         else:
             LOGGER.info('Successful search over %s', self.hmn_collection_name)
-            return ret
+            return ret, OK_STATUS
 
     def new_search(self):
         """Return the data necessary to search over this type of resource.
@@ -285,7 +289,25 @@ class ReadonlyResources(object):
         """
         LOGGER.info('Returning search parameters for %s', self.hmn_member_name)
         return {'search_parameters':
-                self.query_builder.get_search_parameters()}
+                self.query_builder.get_search_parameters()}, OK_STATUS
+
+    def get_paginated_query_results(self, query_set, paginator):
+        if 'count' not in paginator:
+            paginator['count'] = query_set.count()
+        start, end = _get_start_and_end_from_paginator(paginator)
+        return {
+            'paginator': paginator,
+            'items': [self._get_show_dict(rsrc_mdl) for rsrc_mdl in
+                      query_set[start:end]]
+        }
+
+    def add_pagination(self, query_set, paginator):
+        if (paginator and paginator.get('page') is not None and
+                paginator.get('items_per_page') is not None):
+            # raises formencode.Invalid if paginator is invalid
+            paginator = PaginatorSchema.to_python(paginator)
+            return self.get_paginated_query_results(query_set, paginator)
+        return [self._get_show_dict(rsrc_mdl) for rsrc_mdl in query_set]
 
 
     ###########################################################################
@@ -300,7 +322,7 @@ class ReadonlyResources(object):
         try:
             return resource_model.get_dict()
         except AttributeError:
-            return model_to_dict(resource_model)
+            return self.to_dict(resource_model)
 
     def _get_create_dict(self, resource_model):
         return self._get_show_dict(resource_model)
@@ -367,14 +389,16 @@ class ReadonlyResources(object):
         """
         if not query_builder:
             query_builder = self.query_builder
-        if not order_by_params:
-            inp_order_bys = None
-        inp_order_bys = [list(filter(
+        inp_order_bys = None
+        inp_order_by = list(filter(
             None, [order_by_params.get('order_by_attribute'),
                    order_by_params.get('order_by_subattribute'),
-                   order_by_params.get('order_by_direction')]))]
-        return query_set.order_by(
-            query_builder.get_order_bys(inp_order_bys, primary_key=self.primary_key))
+                   order_by_params.get('order_by_direction')]))
+        if inp_order_by:
+            inp_order_bys = [inp_order_by]
+        order_by = query_builder.get_order_bys(
+            inp_order_bys, primary_key=self.primary_key)
+        return query_set.order_by(*order_by)
 
 
 class Resources(ReadonlyResources):
@@ -438,7 +462,7 @@ class Resources(ReadonlyResources):
             values = json.loads(self.request.body.decode('utf8'))
         except ValueError:
             LOGGER.warning('Request body was not valid JSON')
-            return JSONDecodeErrorResponse, 400
+            return JSONDecodeErrorResponse, BAD_REQUEST_STATUS
         state = self._get_create_state(values)
         try:
             data = schema.to_python(values, state)
@@ -447,12 +471,12 @@ class Resources(ReadonlyResources):
             LOGGER.warning(
                 'Attempt to create a(n) %s resulted in an error(s): %s',
                 self.hmn_member_name, errors)
-            return {'errors': errors}, 400
+            return {'errors': errors}, BAD_REQUEST_STATUS
         resource = self._create_new_resource(data)
         resource.save()
         self._post_create(resource)
         LOGGER.info('Created a new %s.', self.hmn_member_name)
-        return self._get_create_dict(resource)
+        return self._get_create_dict(resource), OK_STATUS
 
     def new(self):
         """Return the data necessary to create a new resource.
@@ -468,7 +492,7 @@ class Resources(ReadonlyResources):
         """
         LOGGER.info('Returning the data needed to create a new %s.',
                     self.hmn_member_name)
-        return self._get_new_edit_data(self.request.GET)
+        return self._get_new_edit_data(self.request.GET), OK_STATUS
 
     def update(self, pk):
         """Update a resource and return it.
@@ -485,24 +509,24 @@ class Resources(ReadonlyResources):
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}, 404
+            return {'error': msg}, NOT_FOUND_STATUS
         if self._update_unauth(resource_model) is not False:
             msg = self._update_unauth_msg_obj()
             LOGGER.warning(msg)
-            return msg, 403
+            return msg, FORBIDDEN_STATUS
         schema = self.schema_cls()
         try:
             values = json.loads(self.request.body.decode('utf8'))
         except ValueError:
             LOGGER.warning(JSONDecodeErrorResponse)
-            return JSONDecodeErrorResponse, 400
+            return JSONDecodeErrorResponse, BAD_REQUEST_STATUS
         state = self._get_update_state(values, pk, resource_model)
         try:
             data = schema.to_python(values, state)
         except Invalid as error:
             errors = error.unpack_errors()
             LOGGER.warning(errors)
-            return {'errors': errors}, 400
+            return {'errors': errors}, BAD_REQUEST_STATUS
         resource_dict = resource_model.get_dict()
         resource_model = self._update_resource_model(resource_model, data)
         # resource_model will be False if there are no changes
@@ -510,13 +534,13 @@ class Resources(ReadonlyResources):
             msg = ('The update request failed because the submitted data were'
                    ' not new.')
             LOGGER.warning(msg)
-            return {'error': msg}, 400
+            return {'error': msg}, BAD_REQUEST_STATUS
         self._backup_resource(resource_dict)
         self.request.dbsession.add(resource_model)
         self.request.dbsession.flush()
         self._post_update(resource_model, resource_dict)
         LOGGER.info('Updated %s %s.', self.hmn_member_name, pk)
-        return self._get_update_dict(resource_model)
+        return self._get_update_dict(resource_model), OK_STATUS
 
     def edit(self, pk):
         """Return a resource and the data needed to update it.
@@ -537,16 +561,16 @@ class Resources(ReadonlyResources):
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}, 404
+            return {'error': msg}, NOT_FOUND_STATUS
         if self._model_access_unauth(resource_model) is not False:
             LOGGER.warning('User not authorized to access edit action on model')
-            return UNAUTHORIZED_MSG, 403
+            return UNAUTHORIZED_MSG, FORBIDDEN_STATUS
         LOGGER.info('Returned the data needed to update %s %s.',
                     self.hmn_member_name, pk)
         return {
             'data': self._get_new_edit_data(self.request.GET),
             self.member_name: self._get_edit_dict(resource_model)
-        }
+        }, OK_STATUS
 
     def delete(self, pk):
         """Delete an existing resource and return it.
@@ -559,15 +583,15 @@ class Resources(ReadonlyResources):
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
             LOGGER.warning(msg)
-            return {'error': msg}, 404
+            return {'error': msg}, NOT_FOUND_STATUS
         if self._delete_unauth(resource_model) is not False:
             msg = self._delete_unauth_msg_obj()
             LOGGER.warning(msg)
-            return msg, 403
+            return msg, FORBIDDEN_STATUS
         error_msg = self._delete_impossible(resource_model)
         if error_msg:
             LOGGER.warning(error_msg)
-            return {'error': error_msg}, 403
+            return {'error': error_msg}, FORBIDDEN_STATUS
         resource_model.modifier = self.logged_in_user
         resource_dict = self._get_delete_dict(resource_model)
         self._backup_resource(resource_dict)
@@ -576,7 +600,7 @@ class Resources(ReadonlyResources):
         self.request.dbsession.flush()
         self._post_delete(resource_model)
         LOGGER.info('Deleted %s %s.', self.hmn_member_name, pk)
-        return resource_dict
+        return resource_dict, OK_STATUS
 
     ###########################################################################
     # Additional Resource Actions --- Common to a subset of resources
@@ -613,14 +637,14 @@ class Resources(ReadonlyResources):
                 previous_versions and not unrestricted_previous_versions)
             if resource_restricted or prev_vers_restricted :
                 LOGGER.warning(UNAUTHORIZED_MSG)
-                return UNAUTHORIZED_MSG, 403
+                return UNAUTHORIZED_MSG, FORBIDDEN_STATUS
             LOGGER.info('Returned history of %s %s.', self.hmn_member_name, pk)
             return {self.member_name: resource_model,
                     'previous_versions': unrestricted_previous_versions}
         msg = 'No %s or %s backups match %s' % (
             self.hmn_collection_name, self.hmn_member_name, pk)
         LOGGER.warning(msg)
-        return {'error': msg}, 404
+        return {'error': msg}, NOT_FOUND_STATUS
 
     ###########################################################################
     # Private methods for write-able resources
@@ -746,10 +770,10 @@ class Resources(ReadonlyResources):
         result = {}
         for collection in self._get_new_edit_collections():
             result[collection] = []
-            rescol = self.resource_collections[collection]
+            rsrc_coll = self.resource_collections[collection]
             if (    collection in self._get_mandatory_collections() or
-                    not rescol.model_name):
-                result[collection] = rescol.getter()
+                    not rsrc_coll.model_name):
+                result[collection] = rsrc_coll.getter()
             # There are GET params, so we are selective in what we return.
             elif get_params:
                 val = get_params.get(collection)
@@ -765,46 +789,46 @@ class Resources(ReadonlyResources):
                         # up-to-date so we return nothing.
                         if (val_as_datetime_obj !=
                                 self.db.get_most_recent_modification_datetime(
-                                    rescol.model_name)):
-                            result[collection] = rescol.getter()
+                                    rsrc_coll.model_name)):
+                            result[collection] = rsrc_coll.getter()
                     else:
-                        result[collection] = rescol.getter()
+                        result[collection] = rsrc_coll.getter()
             # There are no GET params, so we get everything from the db and
             # return it.
             else:
-                #for collection, rescol in self.resource_collections.items():
-                #    result[collection] = rescol.getter()
-                result[collection] = rescol.getter()
+                #for collection, rsrc_coll in self.resource_collections.items():
+                #    result[collection] = rsrc_coll.getter()
+                result[collection] = rsrc_coll.getter()
         return dict(result)
 
-    # Map resource collection names to ``ResCol`` instances containing the name
+    # Map resource collection names to ``RsrcColl`` instances containing the name
     # of the relevant model and a function that gets all instances of the
     # relevant resource collection.
     @property
     def resource_collections(self):
         return {
-            'package_types': ResCol(
+            'package_types': RsrcColl(
                 model_name='',
                 getter=lambda: models.Package.PACKAGE_TYPE_CHOICES),
-            'package_statuses': ResCol(
+            'package_statuses': RsrcColl(
                 model_name='',
                 getter=lambda: models.Package.STATUS_CHOICES),
-            'space_access_protocols': ResCol(
+            'space_access_protocols': RsrcColl(
                 model_name='',
                 getter=lambda: models.Space.ACCESS_PROTOCOL_CHOICES),
-            'location_purposes': ResCol(
+            'location_purposes': RsrcColl(
                 model_name='',
                 getter=lambda: models.Location.PURPOSE_CHOICES),
-            'packages': ResCol(
+            'packages': RsrcColl(
                 'Package',
                 get_mini_dicts_getter('Package')),
-            'pipelines': ResCol(
+            'pipelines': RsrcColl(
                 'Pipeline',
                 get_mini_dicts_getter('Pipeline')),
-            'locations': ResCol(
+            'locations': RsrcColl(
                 'Location',
                 get_mini_dicts_getter('Location')),
-            'spaces': ResCol(
+            'spaces': RsrcColl(
                 'Space',
                 get_mini_dicts_getter('Space')),
         }
@@ -825,6 +849,21 @@ class Resources(ReadonlyResources):
         should always be returned in their entirety.
         """
         return ()
+
+
+    def to_dict(self, instance):
+        opts = instance._meta
+        data = {'resource_uri': '/api/v3/{}/{}/'.format(self.collection_name, instance.uuid)}
+        for f in opts.concrete_fields + opts.many_to_many:
+            if isinstance(f, ManyToManyField):
+                if instance.pk is None:
+                    data[f.name] = []
+                else:
+                    data[f.name] = list(
+                        f.value_from_object(instance).values_list('uuid', flat=True))
+            else:
+                data[f.name] = f.value_from_object(instance)
+        return data
 
 
 class SchemaState(object):
@@ -852,30 +891,9 @@ def _get_start_and_end_from_paginator(paginator):
     return (start, start + paginator['items_per_page'])
 
 
-def get_paginated_query_results(query_set, paginator):
-    if 'count' not in paginator:
-        paginator['count'] = query_set.count()
-    start, end = _get_start_and_end_from_paginator(paginator)
-    return {
-        'paginator': paginator,
-        'items': query_set[start:end]
-    }
-
-
-def add_pagination(query_set, paginator):
-    if (paginator and paginator.get('page') is not None and
-            paginator.get('items_per_page') is not None):
-        # raises formencode.Invalid if paginator is invalid
-        paginator = PaginatorSchema.to_python(paginator)
-        return get_paginated_query_results(query_set, paginator)
-    return query_set
-
 
 
 class Packages(Resources):
-
-    def update(self, pk):
-
 
     def _get_user_data(self, data):
         return {
@@ -900,6 +918,21 @@ class Packages(Resources):
             'packages',
             'pipelines',
         )
+
+
+class Locations(Resources):
+
+    def _get_user_data(self, data):
+        return {
+            'description': utils.normalize(data['description']),
+        }
+
+    def _get_create_data(self, data):
+        return self._get_update_data(self._get_user_data(data))
+
+    def _get_update_data(self, user_data):
+        user_data.update({})
+        return user_data
 
 
 class Pipelines(Resources):

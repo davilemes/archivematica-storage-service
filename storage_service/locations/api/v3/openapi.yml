@@ -1,0 +1,278 @@
+openapi: 3.0.0
+
+info:
+  version: 3.0.0
+  title: Archivematica Storage Service API
+  description: An API for the Archivematica Storage Service.
+
+servers:
+  - url: /api/v3
+    description: The default server for an Archivematica Docker Compose deploy.
+
+security:
+  - ApiKeyAuth: []
+
+components:
+
+  securitySchemes:
+    ApiKeyAuth:        # arbitrary name for the security scheme
+      type: apiKey
+      in: header       # can be "header", "query" or "cookie"
+      name: Authorization  # value must be ``ApiKey <username>:<api_key>``
+
+  parameters:
+    pageParam:
+      in: query
+      name: page
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+      description: The page number to return.
+    itemsPerPageParam:
+      in: query
+      name: items_per_page
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+      description: The maximum number of items to return.
+
+  schemas:
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    LocationView:
+      allOf:
+        - $ref: '#/components/schemas/LocationMutable'
+        - type: object
+          properties:
+            uuid:
+              type: string
+              format: uuid
+            id:
+              type: integer
+            resource_uri:
+              type: string
+          required:
+            - uuid
+            - id
+            - resource_uri
+
+    # TODO: distinguish "key required" from "key not required"
+    LocationMutable:
+      type: object
+      properties:
+        # User-modifiable values (duplication with Location)
+        purpose:
+          type: string
+          enum: ["AR", "AS", "CP", "DS", "SD", "SS", "BL", "TS", "RP",]
+        description:
+          type: string
+        used:
+          type: integer  # TODO: should this be a boolean?
+          default: 1  # Is this true?
+        enabled:
+          type: boolean
+          default: true  # Is this true?
+        quota:
+          type: integer
+        relative_path:
+          type: string
+        pipeline:
+          type: array
+          items:
+            type: string
+            format: uuid
+        space:
+          type: string
+          format: uuid
+        replicators:
+          type: array
+          items:
+            type: string
+            format: uuid
+      # All properties are required
+      required:
+        - purpose
+        - description
+        - used
+        - enabled
+        - quota
+        - relative_path
+        - pipeline
+        - space
+        - replicators
+
+    Search:
+      type: object
+      properties:
+        query:
+          type: object
+          properties:
+            filter:
+              type: array  # unclear if OpenAPI can describe filter trie structure (which is an array of strings or arrays)
+              items:
+                oneOf:
+                  - type: string
+                  - type: array
+                    items:
+                      oneOf:
+                        - type: string
+                        - type: array
+                          items:
+                            type: string
+            order_by:
+              type: array
+              items:
+                type: array
+                items:
+                  type: string
+          required:
+            - filter
+        paginator:
+          type: object
+          properties:
+            items_per_page:
+              type: integer
+              minimum: 1
+            page:
+              type: integer
+              minimum: 1
+      required:
+        - query
+
+paths:
+
+  /locations/search/:
+
+    summary: Represents the search endpoint (method) of a collection of Archivematica Storage Service locations
+    description: >
+      This resource represents search access over a collection of locations.
+
+    post:
+      operationId: search_locations
+      summary: Search over locations
+      description: >
+        Returns a list of locations that match the search parameters. This is
+        not your average search; this is near-complete access to the underlying
+        SQL WHEN clause, i.e., an unbounded trie structure representing a query
+        expression.
+      responses:
+        '400':
+          description: The request body contained invalid location search data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '200':  # Not returning 201, but probably should
+          description: The newly created location object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationView'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Search'
+            example:
+              paginator:
+                page: 2
+                items_per_page: 2
+              query:
+                filter: ["and", [["Location", "purpose", "regex", "[AT]S"],
+                                 ["Location", "pipeline", "=",
+                                  "ce8a1a23-35ec-425f-bf2c-a11887389be2"]]]
+                order_by: [["purpose"], ["description", "desc"]]
+
+  /locations/:
+
+    summary: Represents a collection of Archivematica Storage Service locations
+    description: >
+      This resource represents a collection of locations within a space, each
+      of which serves a particular purpose, e.g., storing AIPs.
+
+    get:
+      operationId: get_locations
+      summary: Get some locations
+      description: Returns a list containing all locations.
+
+      parameters:
+        - $ref: '#/components/parameters/pageParam'
+        - $ref: '#/components/parameters/itemsPerPageParam'
+
+      responses:
+        '200':
+          description: A list of locations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LocationView'
+
+    post:
+      operationId: create_location
+      summary: Create a location
+      description: Adds a new location to the locations collection.
+      responses:
+        '400':
+          description: The request body contained invalid location creation data.
+        '200':  # Not returning 201, but probably should
+          description: The newly created location object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationView'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationMutable'
+            example:
+              purpose: "AS"  # AIP Storage
+              description: "My Primary AIP Storage Location"
+              space: "some-space-uuid"
+              pipeline: ["some-pipeline-uuid"]
+              relative_path: "relative/path/to/my_aip_storage/"
+
+  /locations/{uuid}/:
+
+    summary: Represents a single Archivematica Storage Service location
+    description: >
+      This resource represents a specific location within a space, which serves
+      a particular purpose, e.g., storing AIPs.
+
+    parameters:
+      - name: uuid
+        in: path
+        required: true
+        description: The location's UUID
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: get_location
+      summary: Gets a location
+      description: Returns a single location given its UUID
+
+      responses:
+        '200':
+          description: The location matching the UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationView'
+        '404':
+          description: The location does not exist.
+

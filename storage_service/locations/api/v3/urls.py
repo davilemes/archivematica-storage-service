@@ -52,9 +52,22 @@ import string
 
 from django.conf.urls import url
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 import inflect
+from tastypie.authentication import (
+    BasicAuthentication,
+    ApiKeyAuthentication,
+    MultiAuthentication,
+    SessionAuthentication
+)
 
 from . import resources
+from locations.api.v3.constants import (
+    OK_STATUS,
+    METHOD_NOT_ALLOWED_STATUS,
+    UNAUTHORIZED_MSG,
+    FORBIDDEN_STATUS,
+)
 
 LOGGER = logging.getLogger(__name__)
 UUID_PATT = r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
@@ -94,8 +107,6 @@ DEFAULT_METHOD = 'GET'
 ACTIONS2METHODS = {'create': 'POST',
                    'delete': 'DELETE',
                    'update': 'PUT'}
-OK_STATUS = 200
-METHOD_NOT_ALLOWED_STATUS= 405
 
 
 class RouteBuilder(object):
@@ -146,17 +157,21 @@ class RouteBuilder(object):
                         status=METHOD_NOT_ALLOWED_STATUS)
                 resource_cls = getattr(resources, class_name)
                 instance = resource_cls(request)
-                method = getattr(instance, method_name)
-                response = method(**kwargs)
-                try:
-                    response, status = response
-                except (ValueError, TypeError):
-                    status = OK_STATUS
-                return JsonResponse(response, status=status)
+                authentication = MultiAuthentication(
+                    BasicAuthentication(), ApiKeyAuthentication(),
+                    SessionAuthentication())
+                auth_result = authentication.is_authenticated(request)
+                if auth_result is True:
+                    method = getattr(instance, method_name)
+                    response, status = method(**kwargs)
+                else:
+                    LOGGER.warning(UNAUTHORIZED_MSG)
+                    response, status = UNAUTHORIZED_MSG, FORBIDDEN_STATUS
+                return JsonResponse(response, status=status, safe=False)
             urlpatterns_.append(url(
                 regex,
                 # Sidestep Python's late binding:
-                view=partial(resource_callable, config),
+                view=csrf_exempt(partial(resource_callable, config)),
                 name=route_name))
         return urlpatterns_
 
