@@ -1,19 +1,18 @@
-"""Version 3 of the Storage Service API.
+"""Django REST Libary (DRL) Route Builder
 
-The Storage Service exposes the following resources via a consistent HTTP JSON
-interface under the path namespace /api/v3/:
+Defines the ``RouteBuilder`` class whose ``register_resources`` method takes a
+dict representing a resource configuration. Once resources are registered, the
+``get_urlpatterns`` method can be called to return a list of URL patterns that
+can be passed to Django's ``django.conf.urls.include``. Example usage::
 
-- /locations/ --- purpose-specific paths within a /spaces/ resource
-- /packages/ --- Information Package (SIP, DIP or AIP)
-- /spaces/ --- storage space with behaviour specific to backing system
-- /pipelines/ --- an Archivematica instance that is the source of a package
+    >>> resources = {...}
+    >>> drl = RouteBuilder()
+    >>> drl.register_resources(resources)
+    >>> urls = drl.get_urlpatterns()
+    >>> urlpatterns = [url(r'v3/', include(urls))]
 
-The following resources may be exposed later:
-
-- /file/ --- a file on disk (which is in a package), represented as db row.
-- /fsobjects/ --- directories and files on disk, read-only, no database models
-
-All resources have endpoints that follow this pattern::
+All resources registered with the ``RouteBuilder`` are given endpoints that
+follow this pattern::
 
     +-----------------+-------------+----------------------------+--------+
     | Purpose         | HTTP Method | Path                       | Method |
@@ -30,6 +29,22 @@ All resources have endpoints that follow this pattern::
     | Search data     | GET         | /<cllctn_name>/new_search/ | search |
     +-----------------+-------------+----------------------------+--------+
 
+Example resource dict::
+
+    >>> resources = {
+    ...     'dog': {
+    ...         'resource_class': DogResource,
+    ...         'model_class': Dog,  # A Django Model subclass
+    ...         'schema_class': LocationSchema  # A formencode.schema.Schema subclass
+    ...     },
+    ...     'cat': {
+    ...         'resource_class': CatResource,
+    ...         'model_class': Cat,
+    ...         'schema_class': CatSchema,
+    ...         'searchable': False
+    ...     },
+    ... }
+
 .. note:: To remove the search-related routes for a given resource, create a
    ``'searchable'`` key with value ``False`` in the configuration for the
    resource in the ``RESOURCES`` dict. E.g., ``'location': {'searchable':
@@ -40,7 +55,6 @@ All resources have endpoints that follow this pattern::
    ``POST /packages/`` (creating a package) is special, then do special stuff
    in ``resources.py::Packages.create``. Similarly, if packages are indelible,
    then ``resources.py::Packages.delete`` should return 404.
-
 """
 
 from __future__ import absolute_import
@@ -62,7 +76,7 @@ from tastypie.authentication import (
 )
 
 from . import resources
-from locations.api.v3.constants import (
+from .constants import (
     OK_STATUS,
     METHOD_NOT_ALLOWED_STATUS,
     UNAUTHORIZED_MSG,
@@ -118,6 +132,7 @@ class RouteBuilder(object):
 
     def __init__(self):
         self.routes = {}
+        self.resources = None
 
     def register_route(self, route):
         """Register a ``Route()`` instance by breaking it apart and storing it
@@ -189,10 +204,11 @@ class RouteBuilder(object):
         for route in chain(*routes):
             self.register_route(route)
 
-    def register_routes_for_resources(self, resources_):
+    def register_resources(self, resources_):
         """Register all of the routes generable for each resource configured in
         the ``resources_`` dict.
         """
+        self.resources = resources
         for rsrc_member_name, rsrc_config in resources_.items():
             self.register_routes_for_resource(rsrc_member_name, rsrc_config)
 
@@ -291,8 +307,3 @@ def method_not_allowed(tried_method, accepted_methods):
     return {'error': 'The {} method is not allowed for this resources. The'
                      ' accepted methods are: {}'.format(
                          tried_method, ', '.join(accepted_methods))}
-
-
-route_builder = RouteBuilder()
-route_builder.register_routes_for_resources(RESOURCES)
-urlpatterns = route_builder.get_urlpatterns()
