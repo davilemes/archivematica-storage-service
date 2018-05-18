@@ -75,38 +75,23 @@ from tastypie.authentication import (
     SessionAuthentication
 )
 
-from . import resources
 from .constants import (
     OK_STATUS,
     METHOD_NOT_ALLOWED_STATUS,
     UNAUTHORIZED_MSG,
     FORBIDDEN_STATUS,
 )
+from .openapi import OpenAPI
 
-LOGGER = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
+
 UUID_PATT = r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
 ID_PATT = r'\d+'
 ROUTE_NAME_CHARS = string.letters + '_'
-INFLP = inflect.engine()
-INFLP.classical()
 
-# ==============================================================================
-#   Resource Configuration
-# ==============================================================================
-
-# This dict is configuration for the resources that the SS exposes. All of the
-# keys correspond to resources that will receive the standard methods/actions
-# (create, new, index, show, update, edit, and delete). The config dict value
-# controls additional configuration for the resource. For example, adding
-# ``'searchable': False`` will make the resource non-searchable.
-RESOURCES = {
-    #'fsobject': {},
-    'location': {},
-    'package': {},
-    'space': {},
-    'pipeline': {},
-    # 'file': {}
-}
+inflp = inflect.engine()
+inflp.classical()
 
 RESOURCE_ACTIONS = ('create',
                     'delete',
@@ -123,7 +108,7 @@ ACTIONS2METHODS = {'create': 'POST',
                    'update': 'PUT'}
 
 
-class RouteBuilder(object):
+class RouteBuilder(OpenAPI):
     """A builder of routes: register a bunch of ``Route`` instances with it and
     later ask it for a list of corresponding Django ``url`` instances. A
     "route" is a path regex, a route name, an HTTP method, and a class/method
@@ -142,7 +127,7 @@ class RouteBuilder(object):
         config['route_name'] = route.name
         http_methods_config = config.get('http_methods', {})
         http_methods_config[route.http_method] = (
-            route.class_name, route.method_name)
+            route.resource_cls, route.method_name)
         config['http_methods'] = http_methods_config
         self.routes[route.regex] = config
 
@@ -163,14 +148,13 @@ class RouteBuilder(object):
             def resource_callable(config, request, **kwargs):
                 http_methods_config = config['http_methods']
                 try:
-                    class_name, method_name = http_methods_config[
+                    resource_cls, method_name = http_methods_config[
                         request.method]
                 except KeyError:
                     return JsonResponse(
                         method_not_allowed(
                             request.method, list(http_methods_config.keys())),
                         status=METHOD_NOT_ALLOWED_STATUS)
-                resource_cls = getattr(resources, class_name)
                 instance = resource_cls(request)
                 authentication = MultiAuthentication(
                     BasicAuthentication(), ApiKeyAuthentication(),
@@ -180,7 +164,7 @@ class RouteBuilder(object):
                     method = getattr(instance, method_name)
                     response, status = method(**kwargs)
                 else:
-                    LOGGER.warning(UNAUTHORIZED_MSG)
+                    logger.warning(UNAUTHORIZED_MSG)
                     response, status = UNAUTHORIZED_MSG, FORBIDDEN_STATUS
                 return JsonResponse(response, status=status, safe=False)
             urlpatterns_.append(url(
@@ -198,9 +182,11 @@ class RouteBuilder(object):
         """
         routes = []
         if rsrc_config.get('searchable', True):
-            routes.append(yield_search_routes(rsrc_member_name))
+            routes.append(yield_search_routes(
+                rsrc_member_name, rsrc_config['resource_cls']))
         routes.append(yield_standard_routes(
-            rsrc_member_name, pk_patt=rsrc_config.get('pk_patt', UUID_PATT)))
+            rsrc_member_name, rsrc_config['resource_cls'],
+            pk_patt=rsrc_config.get('pk_patt', UUID_PATT)))
         for route in chain(*routes):
             self.register_route(route)
 
@@ -208,7 +194,7 @@ class RouteBuilder(object):
         """Register all of the routes generable for each resource configured in
         the ``resources_`` dict.
         """
-        self.resources = resources
+        self.resources = resources_
         for rsrc_member_name, rsrc_config in resources_.items():
             self.register_routes_for_resource(rsrc_member_name, rsrc_config)
 
@@ -218,7 +204,7 @@ class RouteBuilder(object):
 # Note that because of how Django's ``url`` works, multiple distinct routes can
 # have the same ``url`` instance with the same name; e.g., POST /pipelines/ and
 # GET /pipelines/ are both handled by the "pipelines" ``url``.
-Route = namedtuple('Route', 'name regex http_method class_name method_name')
+Route = namedtuple('Route', 'name regex http_method resource_cls method_name')
 
 
 def get_collection_targetting_regex(rsrc_collection_name, modifiers=None):
@@ -248,37 +234,35 @@ def get_member_targetting_regex(rsrc_collection_name, pk_patt, modifiers=None):
         rsrc_collection_name=rsrc_collection_name, pk_patt=pk_patt)
 
 
-def yield_search_routes(rsrc_member_name):
+def yield_search_routes(rsrc_member_name, resource_cls):
     """Yield the ``Route()``s needed to configure search across the resource
     with member name ``rsrc_member_name``.
     """
-    rsrc_collection_name = INFLP.plural(rsrc_member_name)
-    class_name = rsrc_collection_name.capitalize()
+    rsrc_collection_name = inflp.plural(rsrc_member_name)
     yield Route(name=rsrc_collection_name,
                 regex=get_collection_targetting_regex(rsrc_collection_name),
                 http_method='SEARCH',
-                class_name=class_name,
+                resource_cls=resource_cls,
                 method_name='search')
     yield Route(name='{}_search'.format(rsrc_collection_name),
                 regex=get_collection_targetting_regex(
                     rsrc_collection_name, modifiers=['search']),
                 http_method='POST',
-                class_name=class_name,
+                resource_cls=resource_cls,
                 method_name='search')
     yield Route(name='{}_new_search'.format(rsrc_collection_name),
                 regex=get_collection_targetting_regex(
                     rsrc_collection_name, modifiers=['new_search']),
                 http_method='GET',
-                class_name=class_name,
+                resource_cls=resource_cls,
                 method_name='new_search')
 
 
-def yield_standard_routes(rsrc_member_name, pk_patt=UUID_PATT):
+def yield_standard_routes(rsrc_member_name, resource_cls, pk_patt=UUID_PATT):
     """Yield the ``Route()``s needed to configure standard CRUD actions on the
     resource with member name ``rsrc_member_name``.
     """
-    rsrc_collection_name = INFLP.plural(rsrc_member_name)
-    class_name = rsrc_collection_name.capitalize()
+    rsrc_collection_name = inflp.plural(rsrc_member_name)
     for action in RESOURCE_ACTIONS:
         method_name = action
         http_method = ACTIONS2METHODS.get(action, DEFAULT_METHOD)
@@ -299,7 +283,7 @@ def yield_standard_routes(rsrc_member_name, pk_patt=UUID_PATT):
         yield Route(name=route_name,
                     regex=regex,
                     http_method=http_method,
-                    class_name=class_name,
+                    resource_cls=resource_cls,
                     method_name=method_name)
 
 

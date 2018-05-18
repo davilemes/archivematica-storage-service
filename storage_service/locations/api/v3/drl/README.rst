@@ -32,6 +32,24 @@ user API::
     openapi_schema = drl.get_openapi_schema()  # a YAML file
 
 
+OpenAPI Generate Django Command
+================================================================================
+
+Run the graph_links command and copy the SVG file from container to host:
+
+$ docker-compose exec archivematica-storage-service /src/storage_service/manage.py apiv3openapi
+
+docker-compose exec archivematica-dashboard /src/dashboard/src/manage.py
+graph_links
+
+graph_links
+
+/var/archivematica/sharedDirectory/tmp/chainlinks-2018-03-06.svg
+$ docker-compose ps -q archivematica-dashboard
+88cf70f6d27b68be4d7b84018059b4c93b6384c5d76be5fa73c72c3d285e466d
+$ docker cp 88cf70f6d27b68be4d7b84018059b4c93b6384c5d76be5fa73c72c3d285e466d:/var/archivematica/sharedDirectory/tmp/chainlinks-2018-03-06.svg ./
+
+
 Get all resources of a given type
 ================================================================================
 

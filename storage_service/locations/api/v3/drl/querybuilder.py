@@ -73,14 +73,15 @@ target the Package model by default.
         >>>  (Q(size__lt=1000) | Q(size__gt=512)))
 """
 
+from __future__ import absolute_import
+
 import functools
 import logging
 import operator
 
 from django.db.models import Q
 
-import locations.models as models
-import locations.api.v3.utils as utils
+from . import utils
 
 
 LOGGER = logging.getLogger(__name__)
@@ -119,16 +120,11 @@ class QueryBuilder(object):
         query_set = query_builder.get_query_set(python_query)
     """
 
-    def __init__(self, model_name='Package', primary_key='uuid',
-                 settings=None):
+    def __init__(self, model_cls, primary_key='uuid'):
         self.errors = {}
-        # The name of the target model, i.e., the one we are querying, e.g.,
-        # 'Package'
-        self.model_name = model_name
-        # Some models have a primary key other than 'uuid' ...
+        self.model_cls = model_cls
+        self.model_name = self.model_cls.__name__
         self.primary_key = primary_key
-        if not settings:
-            settings = {}
 
     def get_query_set(self, query_as_dict):
         """Given a dict, return a Django ORM query set."""
@@ -227,8 +223,7 @@ class QueryBuilder(object):
             raise SearchParseError(errors)
 
     def _get_model_manager(self):
-        query_model = getattr(models, self.model_name)
-        return query_model.objects
+        return self.model_cls.objects
 
     def _python2queryexpr(self, query_as_list):
         """This is the function that is called recursively (if necessary) to

@@ -43,33 +43,25 @@ All resources have endpoints that follow this pattern::
 
 """
 
-from .drl import drl
+from locations.api.v3.drl import drl
+from locations.api.v3.resources import (
+    Locations,
+    Packages,
+    Spaces,
+    Pipelines,
+)
+
 
 resources = {
-    'location': {
-        'resource_class': LocationResource,
-        'model_class': Location,
-        'schema_class': LocationSchema
-    },
-    'package': {
-        'resource_class': PackageResource,
-        'model_class': Package,
-        'schema_class': PackageSchema
-    },
-    'space': {
-        'resource_class': SpaceResource,
-        'model_class': Space,
-        'schema_class': SpaceSchema
-    },
-    'pipeline': {
-        'resource_class': PipelineResource,
-        'model_class': Pipeline,
-        'schema_class': PipelineSchema
-    }
+    'location': {'resource_cls': Locations},
+    'package': {'resource_cls': Packages},
+    'space': {'resource_cls': Spaces},
+    'pipeline': {'resource_cls': Pipelines},
 }
+
 drl.register_resources(resources)
 urls = drl.get_urlpatterns()
 
 # openapi_schema = drl.get_openapi_schema()  # a YAML file
 
-__all__ = ('urls',)
+__all__ = ('urls', 'drl')

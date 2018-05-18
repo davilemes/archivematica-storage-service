@@ -1,53 +1,24 @@
-"""Version 3 of the Storage Service API.
+"""Django REST Libary (DRL) Resources
 
-The Storage Service API V3 exposes the following resources via an HTTP JSON
-interface:
+Defines the following classes for easily creating controller sub-classes that
+handle requests to REST resources:
 
-- /locations/ --- purpose-specific paths within a /spaces/ resource
-- /packages/ --- Information Package (SIP, DIP or AIP)
-- /spaces/ --- storage space with behaviour specific to backing system
-- /pipelines/ --- an Archivematica instance that is the source of a package
-
-The following resources may also be exposed in the future:
-
-- /file/ --- a file on disk (which is in a package), represented as db row.
-- /fsobjects/ --- directories and files on disk, read-only, no database models
-
-All resources have endpoints that follow this pattern::
-
-    +-----------------+-------------+--------------------------+--------+
-    | Purpose         | HTTP Method | Path                     | Method |
-    +-----------------+-------------+--------------------------+--------+
-    | Create new      | POST        | /<cllctn_name>           | create |
-    | Create data     | GET         | /<cllctn_name>/new       | new    |
-    | Read all        | GET         | /<cllctn_name>           | index  |
-    | Read specific   | GET         | /<cllctn_name>/<pk>      | show   |
-    | Update specific | PUT         | /<cllctn_name>/<pk>      | update |
-    | Update data     | GET         | /<cllctn_name>/<pk>/edit | edit   |
-    | Delete specific | DELETE      | /<cllctn_name>/<pk>      | delete |
-    | Search          | SEARCH      | /<cllctn_name>           | search |
-    +-----------------+-------------+--------------------------+--------+
-
+- ``Resources``
+- ``ReadonlyResources``
 """
+
+from __future__ import absolute_import
 
 import abc
 from collections import namedtuple
 import json
 import logging
-import pprint
 
-from django.conf import settings
-from django.conf.urls import url
 from django.db.models.fields.related import ManyToManyField
-from django.forms.models import model_to_dict
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from formencode.schema import Schema
-from formencode.validators import Int, Invalid
+from formencode.validators import Invalid
 import inflect
 
-import locations.models as models
-from locations.api.v3.constants import (
+from .constants import (
     JSONDecodeErrorResponse,
     UNAUTHORIZED_MSG,
     OK_STATUS,
@@ -55,26 +26,12 @@ from locations.api.v3.constants import (
     BAD_REQUEST_STATUS,
     FORBIDDEN_STATUS,
 )
-from locations.api.v3.querybuilder import QueryBuilder, SearchParseError
-import locations.api.v3.schemata as schemata
-import locations.api.v3.utils as utils
-
-LOGGER = logging.getLogger(__name__)
-
-INFLP = inflect.engine()
-INFLP.classical()
+from .querybuilder import QueryBuilder, SearchParseError
+from .schemata import PaginatorSchema
+from . import utils
 
 
-# RsrcColl is a resource collection object factory. Each instance holds the
-# relevant model name and instance getter for a given resource collection name.
-RsrcColl = namedtuple('RsrcColl', ['model_name', 'getter'])
-
-
-def get_mini_dicts_getter(model_name):
-    def func():
-        model_cls = getattr(models, model_name)
-        return [mi.get_mini_dict() for mi in model_cls.objects.all()]
-    return func
+logger = logging.getLogger(__name__)
 
 
 class ReadonlyResources(object):
@@ -122,22 +79,24 @@ class ReadonlyResources(object):
                 self.collection_name)
         if not getattr(self, 'hmn_member_name', None):
             self.hmn_member_name = self.member_name
-        if not getattr(self, 'model_name', None):
-            self.model_name = self.member_name.capitalize()
-        self.schema_cls_name = self.model_name + 'Schema'
-        # Classes
-        if not getattr(self, 'model_cls', None):
-            self.model_cls = getattr(models, self.model_name)
-        self.schema_cls = getattr(schemata, self.schema_cls_name, None)
+
+    # RsrcColl is a resource collection object factory. Each instance holds the
+    # relevant model name and instance getter for a given resource collection
+    # name.
+    RsrcColl = namedtuple('RsrcColl', ['model_cls', 'getter'])
+
+    @staticmethod
+    def get_mini_dicts_getter(model_cls):
+        def func():
+            return [mi.get_mini_dict() for mi in model_cls.objects.all()]
+        return func
 
     @property
     def query_builder(self):
         if not self._query_builder:
             self._query_builder = QueryBuilder(
-                model_name=self.model_name,
-                primary_key=self.primary_key,
-                settings=settings
-            )
+                self.model_cls,
+                primary_key=self.primary_key)
         return self._query_builder
 
     @property
@@ -154,12 +113,12 @@ class ReadonlyResources(object):
     ###########################################################################
 
     def create(self):
-        LOGGER.warning('Failed attempt to create a read-only %s',
+        logger.warning('Failed attempt to create a read-only %s',
                        self.hmn_member_name)
         return READONLY_RSLT, NOT_FOUND_STATUS
 
     def new(self):
-        LOGGER.warning('Failed attempt to get data for creating a read-only %s',
+        logger.warning('Failed attempt to get data for creating a read-only %s',
                        self.hmn_member_name)
         return READONLY_RSLT, NOT_FOUND_STATUS
 
@@ -171,7 +130,7 @@ class ReadonlyResources(object):
 
         :returns: a JSON-serialized array of resources objects.
         """
-        LOGGER.info('Attempting to read all %s', self.hmn_collection_name)
+        logger.info('Attempting to read all %s', self.hmn_collection_name)
         query_set = self.model_cls.objects
         get_params = self.request.GET
         try:
@@ -180,14 +139,14 @@ class ReadonlyResources(object):
             result = self.add_pagination(query_set, get_params)
         except Invalid as error:
             errors = error.unpack_errors()
-            LOGGER.warning('Attempt to read all %s resulted in an error(s): %s',
+            logger.warning('Attempt to read all %s resulted in an error(s): %s',
                            self.hmn_collection_name, errors)
             return {'errors': errors}, BAD_REQUEST_STATUS
         headers_ctl = self._headers_control(result)
         if headers_ctl is not False:
             return headers_ctl
-        LOGGER.info('Reading all %s', self.hmn_collection_name)
-        LOGGER.info(result)
+        logger.info('Reading all %s', self.hmn_collection_name)
+        logger.info(result)
         return result, OK_STATUS
 
     def show(self, pk):
@@ -196,30 +155,30 @@ class ReadonlyResources(object):
         :param str pk: the ``pk`` value of the resource to be returned.
         :returns: a resource model object.
         """
-        LOGGER.info('Attempting to read a single %s', self.hmn_member_name)
+        logger.info('Attempting to read a single %s', self.hmn_member_name)
         resource_model = self._model_from_pk(pk)
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return {'error': msg}, NOT_FOUND_STATUS
         if self._model_access_unauth(resource_model) is not False:
-            LOGGER.warning(UNAUTHORIZED_MSG)
+            logger.warning(UNAUTHORIZED_MSG)
             return UNAUTHORIZED_MSG, FORBIDDEN_STATUS
-        LOGGER.info('Reading a single %s', self.hmn_member_name)
+        logger.info('Reading a single %s', self.hmn_member_name)
         return self._get_show_dict(resource_model), OK_STATUS
 
     def update(self, pk):
-        LOGGER.warning('Failed attempt to update a read-only %s',
+        logger.warning('Failed attempt to update a read-only %s',
                        self.hmn_member_name)
         return READONLY_RSLT, NOT_FOUND_STATUS
 
     def edit(self, pk):
-        LOGGER.warning('Failed attempt to get data for updating a read-only %s',
+        logger.warning('Failed attempt to get data for updating a read-only %s',
                        self.hmn_member_name)
         return READONLY_RSLT, NOT_FOUND_STATUS
 
     def delete(self, pk):
-        LOGGER.warning('Failed attempt to delete a read-only %s',
+        logger.warning('Failed attempt to delete a read-only %s',
                        self.hmn_member_name)
         return READONLY_RSLT, NOT_FOUND_STATUS
 
@@ -235,27 +194,27 @@ class ReadonlyResources(object):
 
           where the ``order_by`` and ``paginator`` attributes are optional.
         """
-        LOGGER.info('Attempting to search over %s', self.hmn_collection_name)
+        logger.info('Attempting to search over %s', self.hmn_collection_name)
         try:
             python_search_params = json.loads(
                 self.request.body.decode('utf8'))
         except ValueError:
-            LOGGER.warning('Request body was not valid JSON')
-            LOGGER.info(self.request.body.decode('utf8'))
+            logger.warning('Request body was not valid JSON')
+            logger.info(self.request.body.decode('utf8'))
             return JSONDecodeErrorResponse, BAD_REQUEST_STATUS
         try:
             query_set = self.query_builder.get_query_set(
                 python_search_params.get('query'))
         except (SearchParseError, Invalid) as error:
             errors = error.unpack_errors()
-            LOGGER.warning(
+            logger.warning(
                 'Attempt to search over all %s resulted in an error(s): %s',
                 self.hmn_collection_name, errors)
             return {'errors': errors}, BAD_REQUEST_STATUS
         # Might be better to catch (OperationalError, AttributeError,
         # InvalidRequestError, RuntimeError):
         except Exception as error:  # FIX: too general exception
-            LOGGER.warning('Filter expression (%s) raised an unexpected'
+            logger.warning('Filter expression (%s) raised an unexpected'
                            ' exception: %s.', self.request.body, error)
             return {'error': 'The specified search parameters generated an'
                              ' invalid database query'}, BAD_REQUEST_STATUS
@@ -267,16 +226,16 @@ class ReadonlyResources(object):
         except OperationalError:
             msg = ('The specified search parameters generated an invalid'
                    ' database query')
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return {'error': msg}, BAD_REQUEST_STATUS
         except Invalid as error:  # For paginator schema errors.
             errors = error.unpack_errors()
-            LOGGER.warning(
+            logger.warning(
                 'Attempt to search over all %s resulted in an error(s): %s',
                 self.hmn_collection_name, errors)
             return {'errors': errors}, BAD_REQUEST_STATUS
         else:
-            LOGGER.info('Successful search over %s', self.hmn_collection_name)
+            logger.info('Successful search over %s', self.hmn_collection_name)
             return ret, OK_STATUS
 
     def new_search(self):
@@ -287,7 +246,7 @@ class ReadonlyResources(object):
         :returns: a JSON object with a ``search_parameters`` attribute which
          resolves to an object with attributes ``attributes`` and ``relations``.
         """
-        LOGGER.info('Returning search parameters for %s', self.hmn_member_name)
+        logger.info('Returning search parameters for %s', self.hmn_member_name)
         return {'search_parameters':
                 self.query_builder.get_search_parameters()}, OK_STATUS
 
@@ -335,12 +294,13 @@ class ReadonlyResources(object):
 
     def _eagerload_model(self, query_set):
         """Override this in a subclass with model-specific eager loading."""
-        return get_eagerloader(self.model_name)(query_set)
+        return get_eagerloader(self.model_cls)(query_set)
 
     def _filter_query(self, query_set):
         """Override this in a subclass with model-specific query filtering.
         E.g.,::
-            >>> return filter_restricted_models(self.model_name, query_set)
+
+            >>> return filter_restricted_models(self.model_cls, query_set)
         """
         return query_set
 
@@ -456,26 +416,26 @@ class Resources(ReadonlyResources):
         :request body: JSON object representing the resource to create.
         :returns: the newly created resource.
         """
-        LOGGER.info('Attempting to create a new %s.', self.hmn_member_name)
+        logger.info('Attempting to create a new %s.', self.hmn_member_name)
         schema = self.schema_cls()
         try:
             values = json.loads(self.request.body.decode('utf8'))
         except ValueError:
-            LOGGER.warning('Request body was not valid JSON')
+            logger.warning('Request body was not valid JSON')
             return JSONDecodeErrorResponse, BAD_REQUEST_STATUS
         state = self._get_create_state(values)
         try:
             data = schema.to_python(values, state)
         except Invalid as error:
             errors = error.unpack_errors()
-            LOGGER.warning(
+            logger.warning(
                 'Attempt to create a(n) %s resulted in an error(s): %s',
                 self.hmn_member_name, errors)
             return {'errors': errors}, BAD_REQUEST_STATUS
         resource = self._create_new_resource(data)
         resource.save()
         self._post_create(resource)
-        LOGGER.info('Created a new %s.', self.hmn_member_name)
+        logger.info('Created a new %s.', self.hmn_member_name)
         return self._get_create_dict(resource), OK_STATUS
 
     def new(self):
@@ -490,7 +450,7 @@ class Resources(ReadonlyResources):
            string parameters can affect the contents of the lists in the
            returned dictionary.
         """
-        LOGGER.info('Returning the data needed to create a new %s.',
+        logger.info('Returning the data needed to create a new %s.',
                     self.hmn_member_name)
         return self._get_new_edit_data(self.request.GET), OK_STATUS
 
@@ -505,27 +465,27 @@ class Resources(ReadonlyResources):
         :returns: the updated resource model.
         """
         resource_model = self._model_from_pk(pk)
-        LOGGER.info('Attempting to update %s %s.', self.hmn_member_name, pk)
+        logger.info('Attempting to update %s %s.', self.hmn_member_name, pk)
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return {'error': msg}, NOT_FOUND_STATUS
         if self._update_unauth(resource_model) is not False:
             msg = self._update_unauth_msg_obj()
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return msg, FORBIDDEN_STATUS
         schema = self.schema_cls()
         try:
             values = json.loads(self.request.body.decode('utf8'))
         except ValueError:
-            LOGGER.warning(JSONDecodeErrorResponse)
+            logger.warning(JSONDecodeErrorResponse)
             return JSONDecodeErrorResponse, BAD_REQUEST_STATUS
         state = self._get_update_state(values, pk, resource_model)
         try:
             data = schema.to_python(values, state)
         except Invalid as error:
             errors = error.unpack_errors()
-            LOGGER.warning(errors)
+            logger.warning(errors)
             return {'errors': errors}, BAD_REQUEST_STATUS
         resource_dict = resource_model.get_dict()
         resource_model = self._update_resource_model(resource_model, data)
@@ -533,13 +493,13 @@ class Resources(ReadonlyResources):
         if not resource_model:
             msg = ('The update request failed because the submitted data were'
                    ' not new.')
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return {'error': msg}, BAD_REQUEST_STATUS
         self._backup_resource(resource_dict)
         self.request.dbsession.add(resource_model)
         self.request.dbsession.flush()
         self._post_update(resource_model, resource_dict)
-        LOGGER.info('Updated %s %s.', self.hmn_member_name, pk)
+        logger.info('Updated %s %s.', self.hmn_member_name, pk)
         return self._get_update_dict(resource_model), OK_STATUS
 
     def edit(self, pk):
@@ -556,16 +516,16 @@ class Resources(ReadonlyResources):
             existing resource of this type.
         """
         resource_model = self._model_from_pk(pk)
-        LOGGER.info('Attempting to return the data needed to update %s %s.',
+        logger.info('Attempting to return the data needed to update %s %s.',
                     self.hmn_member_name, pk)
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return {'error': msg}, NOT_FOUND_STATUS
         if self._model_access_unauth(resource_model) is not False:
-            LOGGER.warning('User not authorized to access edit action on model')
+            logger.warning('User not authorized to access edit action on model')
             return UNAUTHORIZED_MSG, FORBIDDEN_STATUS
-        LOGGER.info('Returned the data needed to update %s %s.',
+        logger.info('Returned the data needed to update %s %s.',
                     self.hmn_member_name, pk)
         return {
             'data': self._get_new_edit_data(self.request.GET),
@@ -579,18 +539,18 @@ class Resources(ReadonlyResources):
         :returns: the deleted resource model.
         """
         resource_model = self._model_from_pk(pk)
-        LOGGER.info('Attempting to delete %s %s.', self.hmn_member_name, pk)
+        logger.info('Attempting to delete %s %s.', self.hmn_member_name, pk)
         if not resource_model:
             msg = self._rsrc_not_exist(pk)
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return {'error': msg}, NOT_FOUND_STATUS
         if self._delete_unauth(resource_model) is not False:
             msg = self._delete_unauth_msg_obj()
-            LOGGER.warning(msg)
+            logger.warning(msg)
             return msg, FORBIDDEN_STATUS
         error_msg = self._delete_impossible(resource_model)
         if error_msg:
-            LOGGER.warning(error_msg)
+            logger.warning(error_msg)
             return {'error': error_msg}, FORBIDDEN_STATUS
         resource_model.modifier = self.logged_in_user
         resource_dict = self._get_delete_dict(resource_model)
@@ -599,52 +559,8 @@ class Resources(ReadonlyResources):
         self.request.dbsession.delete(resource_model)
         self.request.dbsession.flush()
         self._post_delete(resource_model)
-        LOGGER.info('Deleted %s %s.', self.hmn_member_name, pk)
+        logger.info('Deleted %s %s.', self.hmn_member_name, pk)
         return resource_dict, OK_STATUS
-
-    ###########################################################################
-    # Additional Resource Actions --- Common to a subset of resources
-    ###########################################################################
-
-    def history(self):
-        """Return the resource with the pk in the path along with its previous
-        versions.
-
-        :URL: ``GET /<resource_collection_name>/history/<pk>``
-        :param str pk: a string matching the ``pk`` or ``UUID`` value of the
-            resource whose history is requested.
-        :returns: A dictionary of the form::
-
-                {"<resource_member_name>": { ... },
-                 "previous_versions": [ ... ]}
-
-            where the value of the ``<resource_member_name>`` key is the
-            resource whose history is requested and the value of the
-            ``previous_versions`` key is a list of dictionaries representing
-            previous versions of the resource.
-        """
-        pk = self.request.matchdict['pk']
-        LOGGER.info('Requesting history of %s %s.', self.hmn_member_name, pk)
-        resource_model, previous_versions = self.db\
-            .get_model_and_previous_versions(self.model_name, pk)
-        if resource_model or previous_versions:
-            unrestricted_previous_versions = [
-                pv for pv in previous_versions
-                if not self._model_access_unauth(pv)]
-            resource_restricted = (resource_model and
-                                   self._model_access_unauth(resource_model))
-            prev_vers_restricted = (
-                previous_versions and not unrestricted_previous_versions)
-            if resource_restricted or prev_vers_restricted :
-                LOGGER.warning(UNAUTHORIZED_MSG)
-                return UNAUTHORIZED_MSG, FORBIDDEN_STATUS
-            LOGGER.info('Returned history of %s %s.', self.hmn_member_name, pk)
-            return {self.member_name: resource_model,
-                    'previous_versions': unrestricted_previous_versions}
-        msg = 'No %s or %s backups match %s' % (
-            self.hmn_collection_name, self.hmn_member_name, pk)
-        LOGGER.warning(msg)
-        return {'error': msg}, NOT_FOUND_STATUS
 
     ###########################################################################
     # Private methods for write-able resources
@@ -749,89 +665,29 @@ class Resources(ReadonlyResources):
         """
         pass
 
+    def get_most_recent_modification_datetime(self, model_cls):
+        """Return the most recent datetime_modified attribute for the model
+
+        .. note:: This method is intended to be called from
+           ``_get_new_edit_data`` but the relevant functionality is not yet
+           implemented.
+        """
+        return None
+
     def _get_new_edit_data(self, get_params):
-        """Return a dict containing the data (related models) necessary to
-        create a new (or edit an existing) resource model of the given type.
-        :param get_params: the ``request.GET`` dictionary-like QueryDict object
-                           generated by Django which contains the query string
-                           parameters of the request.
-        :returns: A dictionary whose values are lists of objects needed to
-                  create or update forms.
-        If ``get_params`` has no keys, then return all collections encoded in
-        ``self._get_new_edit_collections()``. If ``get_params`` does have keys,
-        then for each key whose value is a non-empty string (and not a valid
-        ISO 8601 datetime) add the appropriate list of objects to the return
-        dictionary. If the value of a key is a valid ISO 8601 datetime string,
-        add the corresponding list of objects *only* if the datetime does *not*
-        match the most recent ``datetime_modified`` value of the resource.
-        That is, a non-matching datetime indicates that the requester has
-        out-of-date data.
+        """Return the data to create/edit this resource.
+
+        .. note:: the request GET params (``get_params``) should be used here
+        to allow the user to only request fresh data. However, this makes
+        assumptions about the Django models that cannot be guaranteed right now
+        so this functionality is not currently used.
         """
         result = {}
         for collection in self._get_new_edit_collections():
             result[collection] = []
             rsrc_coll = self.resource_collections[collection]
-            if (    collection in self._get_mandatory_collections() or
-                    not rsrc_coll.model_name):
-                result[collection] = rsrc_coll.getter()
-            # There are GET params, so we are selective in what we return.
-            elif get_params:
-                val = get_params.get(collection)
-                # Proceed so long as val is not an empty string.
-                if val:
-                    val_as_datetime_obj = utils.datetime_string2datetime(val)
-                    if val_as_datetime_obj:
-                        # Value of param is an ISO 8601 datetime string that
-                        # does not match the most recent datetime_modified of
-                        # the relevant model in the db: therefore we return a
-                        # list of objects/dicts. If the datetimes do match,
-                        # this indicates that the requester's own stores are
-                        # up-to-date so we return nothing.
-                        if (val_as_datetime_obj !=
-                                self.db.get_most_recent_modification_datetime(
-                                    rsrc_coll.model_name)):
-                            result[collection] = rsrc_coll.getter()
-                    else:
-                        result[collection] = rsrc_coll.getter()
-            # There are no GET params, so we get everything from the db and
-            # return it.
-            else:
-                #for collection, rsrc_coll in self.resource_collections.items():
-                #    result[collection] = rsrc_coll.getter()
-                result[collection] = rsrc_coll.getter()
-        return dict(result)
-
-    # Map resource collection names to ``RsrcColl`` instances containing the name
-    # of the relevant model and a function that gets all instances of the
-    # relevant resource collection.
-    @property
-    def resource_collections(self):
-        return {
-            'package_types': RsrcColl(
-                model_name='',
-                getter=lambda: models.Package.PACKAGE_TYPE_CHOICES),
-            'package_statuses': RsrcColl(
-                model_name='',
-                getter=lambda: models.Package.STATUS_CHOICES),
-            'space_access_protocols': RsrcColl(
-                model_name='',
-                getter=lambda: models.Space.ACCESS_PROTOCOL_CHOICES),
-            'location_purposes': RsrcColl(
-                model_name='',
-                getter=lambda: models.Location.PURPOSE_CHOICES),
-            'packages': RsrcColl(
-                'Package',
-                get_mini_dicts_getter('Package')),
-            'pipelines': RsrcColl(
-                'Pipeline',
-                get_mini_dicts_getter('Pipeline')),
-            'locations': RsrcColl(
-                'Location',
-                get_mini_dicts_getter('Location')),
-            'spaces': RsrcColl(
-                'Space',
-                get_mini_dicts_getter('Space')),
-        }
+            result[collection] = rsrc_coll.getter()
+        return result
 
     def _get_new_edit_collections(self):
         """Return a sequence of strings representing the names of the
@@ -875,91 +731,10 @@ class SchemaState(object):
             setattr(self, key, val)
 
 
-def get_eagerloader(model_name):
+def get_eagerloader(model_cls):
     return lambda query_set: query_set
-
-
-class PaginatorSchema(Schema):
-    allow_extra_fields = True
-    filter_extra_fields = False
-    items_per_page = Int(not_empty=True, min=1)
-    page = Int(not_empty=True, min=1)
 
 
 def _get_start_and_end_from_paginator(paginator):
     start = (paginator['page'] - 1) * paginator['items_per_page']
     return (start, start + paginator['items_per_page'])
-
-
-
-
-class Packages(Resources):
-
-    def _get_user_data(self, data):
-        return {
-            'description': utils.normalize(data['description']),
-        }
-
-    def _get_create_data(self, data):
-        return self._get_update_data(self._get_user_data(data))
-
-    def _get_update_data(self, user_data):
-        user_data.update({})
-        return user_data
-
-    def _get_new_edit_collections(self):
-        """Returns the names of the collections that are required in order to
-        create a new, or edit an existing, pipeline.
-        """
-        return (
-            'package_types',
-            'package_statuses',
-            'locations',
-            'packages',
-            'pipelines',
-        )
-
-
-class Locations(Resources):
-
-    def _get_user_data(self, data):
-        return {
-            'description': utils.normalize(data['description']),
-        }
-
-    def _get_create_data(self, data):
-        return self._get_update_data(self._get_user_data(data))
-
-    def _get_update_data(self, user_data):
-        user_data.update({})
-        return user_data
-
-
-class Pipelines(Resources):
-
-    def _get_user_data(self, data):
-        return {
-            'description': utils.normalize(data['description']),
-        }
-
-    def _get_create_data(self, data):
-        return self._get_update_data(self._get_user_data(data))
-
-    def _get_update_data(self, user_data):
-        user_data.update({})
-        return user_data
-
-
-class Spaces(Resources):
-
-    def _get_user_data(self, data):
-        return {
-            'path': utils.normalize(data['path']),
-        }
-
-    def _get_create_data(self, data):
-        return self._get_update_data(self._get_user_data(data))
-
-    def _get_update_data(self, user_data):
-        user_data.update({})
-        return user_data

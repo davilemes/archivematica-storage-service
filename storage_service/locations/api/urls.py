@@ -1,7 +1,7 @@
 from django.conf.urls import include, url
 from tastypie.api import Api
 from locations.api import v1, v2
-from locations.api.v3 as v3_api
+import locations.api.v3 as v3_api
 
 from locations.api.sword import views
 
@@ -20,9 +20,9 @@ v2_api.register(v2.PipelineResource())
 v2_api.register(v2.AsyncResource())
 
 urlpatterns = [
+    #url(r'v3/', include(v3_api.urls)),
     url(r'', include(v1_api.urls)),
     url(r'v1/sword/$', views.service_document, name='sword_service_document'),
     url(r'', include(v2_api.urls)),
     url(r'v2/sword/$', views.service_document, name='sword_service_document'),
-    url(r'v3/', include(v3_api.urls)),
 ]
