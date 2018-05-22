@@ -1,0 +1,16 @@
+*.py[co]
+src/dashboard/src/settings_local.py
+qubit-git
+*.pyo
+*~
+localDevSetup/ETCsudoersBackup
+
+## Files automatically generated through createtransfers.py 
+TestTransfers/files_with_various_encodings/
+TestTransfers/acceptance-tests/performance/
+TestTransfers/deep_transfer/
+
+# Eclipse IDE files
+.project
+.pydevproject
+.settings/

@@ -31,6 +31,7 @@ ADD requirements/ /src/requirements/
 RUN pip install -q -r /src/requirements/production.txt -r /src/requirements/test.txt
 ADD ./ /src/
 ADD ./install/storage-service.gunicorn-config.py /etc/archivematica/storage-service.gunicorn-config.py
+ADD ./archivematica-sampledata/ /home/archivematica/archivematica-sampledata/
 
 RUN set -ex \
 	&& groupadd --gid 333 --system archivematica \
